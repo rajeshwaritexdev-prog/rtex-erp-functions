@@ -31,6 +31,7 @@ async function connectToDatabase() {
 
 // 2. Define your endpoints just like a normal Express app
 app.get('/api/health', (req, res) => {
+    console.log('Health check endpoint hit');
   res.json({ status: 'Backend is fully operational and ready to serve requests' });
 });
 
