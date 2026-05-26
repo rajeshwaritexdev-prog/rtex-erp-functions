@@ -52,6 +52,7 @@ app.get('/api/test', async (req, res) => {
 if (require.main === module) {
   const PORT = 9000;
   app.listen(PORT, () => {
+    console.log("App is running..")
     console.log(`Local backend running at http://localhost:${PORT}`);
   }).on('error', (err) => {
     console.error('Server error:', err);
