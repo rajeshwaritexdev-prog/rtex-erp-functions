@@ -135,3 +135,27 @@ git push origin main
 2. Once merged to `main`, the changes automatically push to the prod Lambda function.
 
 **Note:** Code pushed to `develop` automatically deploys to the dev function, and merged code to `main` automatically deploys to the prod function.
+
+### Manual Deployment to AWS Lambda
+
+If you need to manually deploy without using git automation:
+
+#### 1. Create a Deployment Package
+
+```bash
+zip -r deployment.zip index.js node_modules package.json .env
+```
+
+#### 2. Upload to AWS Lambda
+
+1. Go to [AWS Lambda Console](https://console.aws.amazon.com/lambda/)
+2. Select your target function (dev or prod)
+3. In the **Code** section, click **Upload from** → **ZIP file**
+4. Select your `deployment.zip` file and click **Save**
+5. Verify the function is updated
+
+#### 3. Verify Deployment
+
+Test your deployed function using the Lambda Test feature or invoke it via the API Gateway endpoint.
+
+**Note:** Ensure the `MONGO_URI` environment variable is set in the Lambda function configuration before testing.
