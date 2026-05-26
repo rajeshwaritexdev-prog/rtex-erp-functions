@@ -7,7 +7,7 @@ const { configDotenv } = require('dotenv');
 const app = express();
 
 // Allow requests from your React frontend
-app.use(cors());
+// app.use(cors());
 app.use(express.json());
 configDotenv(); // Load environment variables from .env file (for local development)
 
