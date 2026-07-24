@@ -7,7 +7,7 @@ const { configDotenv } = require('dotenv');
 const app = express();
 
 // Allow requests from your React frontend
-app.use(cors());
+// app.use(cors());
 app.use(express.json());
 configDotenv(); // Load environment variables from .env file (for local development)
 
@@ -51,33 +51,33 @@ function calculateDynamicStatus(remainingMtr, allocatedAt, isAllocated, type) {
   if (type === 'loom' && !isAllocated) {
     return 'Idle';
   }
-  
+
   if (remainingMtr === 0) {
     return type === 'loom' ? 'Idle' : 'Complete';
   }
-  
+
   if (remainingMtr > 0 && remainingMtr < 800) {
     return 'Low';
   }
-  
+
   // If we reach here, remainingMtr >= 800
   if (!isAllocated) {
     return 'Available'; // Only applies to Beam, as Loom is caught above
   }
-  
+
   if (allocatedAt) {
     const allocatedTime = new Date(allocatedAt).getTime();
     const now = new Date().getTime();
     const hoursElapsed = (now - allocatedTime) / (1000 * 60 * 60);
-    
+
     if (hoursElapsed < 6) {
       return 'Just allocated';
     } else {
       return 'Running';
     }
   }
-  
-  return 'Running'; 
+
+  return 'Running';
 }
 
 // 2. Define your endpoints just like a normal Express app
@@ -125,7 +125,7 @@ app.get('/api/beams', async (req, res) => {
     const beamsWithDynamicStatus = beams.map(beam => {
       const isAllocated = beam.loom && beam.loom !== "Yet to be allocated";
       const status = calculateDynamicStatus(beam.remainingMtr, beam.allocatedAt, isAllocated, 'beam');
-      
+
       let isNewlyAdded = false;
       if (!isAllocated && beam.createdAt) {
         const createdTime = new Date(beam.createdAt).getTime();
@@ -134,7 +134,7 @@ app.get('/api/beams', async (req, res) => {
           isNewlyAdded = true;
         }
       }
-      
+
       return { ...beam, status, isNewlyAdded };
     });
 
@@ -197,7 +197,7 @@ app.get('/api/looms', async (req, res) => {
         }
       }
     ]).toArray();
-    
+
     const loomsWithDynamicStatus = looms.map(loom => {
       const isAllocated = !!loom.beamId && loom.beamId !== 'none';
       const status = calculateDynamicStatus(loom.remainingMtr, loom.allocatedAt, isAllocated, 'loom');
@@ -208,7 +208,7 @@ app.get('/api/looms', async (req, res) => {
         status: status
       };
     });
-    
+
     res.json({ data: loomsWithDynamicStatus });
   } catch (error) {
     console.error(error);
@@ -220,7 +220,7 @@ app.post('/api/looms', async (req, res) => {
   try {
     const db = await connectToDatabase();
     const newLoom = req.body;
-    
+
     if (!newLoom.loomNumber) {
       return res.status(400).json({ error: "Loom number is required" });
     }
@@ -232,7 +232,7 @@ app.post('/api/looms', async (req, res) => {
     };
 
     await db.collection('looms').insertOne(loomToInsert);
-    
+
     // Update the allocated beam if one was selected
     if (newLoom.beamId) {
       await db.collection('beams').updateOne(
@@ -240,19 +240,19 @@ app.post('/api/looms', async (req, res) => {
         { $set: { loom: newLoom.loomNumber, allocated_at: new Date().toISOString() } }
       );
     }
-    
+
     // Calculate initial dynamic status to return to frontend
     const isAllocated = !!newLoom.beamId && newLoom.beamId !== 'none';
     // When just created, if a beam was allocated, we assume it has full length and it was just allocated now
     const initialStatus = isAllocated ? 'Just allocated' : 'Idle';
-    
+
     const responseData = {
       loomNumber: loomToInsert.loom_number,
       beamId: loomToInsert.beam_id,
       variety: loomToInsert.variety,
       status: initialStatus
     };
-    
+
     res.json({ message: "success", data: responseData });
   } catch (error) {
     console.error(error);
@@ -265,13 +265,13 @@ app.put('/api/looms/:loomNumber', async (req, res) => {
     const db = await connectToDatabase();
     const { loomNumber } = req.params;
     const { beamId, variety } = req.body;
-    
+
     // Find the existing loom
     const oldLoom = await db.collection('looms').findOne({ loom_number: loomNumber });
     if (!oldLoom) {
       return res.status(404).json({ error: "Loom not found" });
     }
-    
+
     // 1. If old beam exists and is different, unallocate it
     if (oldLoom.beam_id && oldLoom.beam_id !== 'none' && oldLoom.beam_id !== beamId) {
       await db.collection('beams').updateOne(
@@ -279,7 +279,7 @@ app.put('/api/looms/:loomNumber', async (req, res) => {
         { $set: { loom: 'Yet to be allocated', allocated_at: null } }
       );
     }
-    
+
     // 2. If new beam is provided and is different, allocate it
     if (beamId && beamId !== 'none' && beamId !== oldLoom.beam_id) {
       await db.collection('beams').updateOne(
@@ -287,13 +287,13 @@ app.put('/api/looms/:loomNumber', async (req, res) => {
         { $set: { loom: loomNumber, allocated_at: new Date().toISOString() } }
       );
     }
-    
+
     // 3. Update the loom document
     await db.collection('looms').updateOne(
       { loom_number: loomNumber },
       { $set: { beam_id: beamId, variety: variety } }
     );
-    
+
     // Return updated fields (status will be dynamically calculated on fetch, but we can pass a dummy/initial state)
     res.json({ message: "success", data: { loomNumber, beamId, variety } });
   } catch (error) {
