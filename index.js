@@ -7,7 +7,7 @@ const { configDotenv } = require('dotenv');
 const app = express();
 
 // Allow requests from your React frontend
-// app.use(cors());
+app.use(cors());
 app.use(express.json());
 configDotenv(); // Load environment variables from .env file (for local development)
 
@@ -32,14 +32,34 @@ async function connectToDatabase() {
     const varietiesCount = await cachedDb.collection('varieties').countDocuments();
     if (varietiesCount === 0) {
       await cachedDb.collection('varieties').insertMany([
-        { variety_id: '01', variety_name: 'L kaavi - mla karai', yarn_count: '2/40', warp_ends: 2670, colour: 'marron, military green', loom_id: '06' },
-        { variety_id: '02', variety_name: 'Eerazhai - kambi karai', yarn_count: '40C', warp_ends: 2670, colour: 'blue, white', loom_id: '07' },
-        { variety_id: '03', variety_name: 'Plain weave - special', yarn_count: '60C', warp_ends: 3000, colour: 'red, yellow', loom_id: '08' }
+        { variety_id: '01', variety_name: 'L kaavi - mla karai', yarn_count: '2/40', warp_ends: 2670, colour: 'marron, military green', loom_id: '06', type: 'Veshti' },
+        { variety_id: '02', variety_name: 'Eerazhai - kambi karai', yarn_count: '40C', warp_ends: 2670, colour: 'blue, white', loom_id: '07', type: 'Veshti' },
+        { variety_id: '03', variety_name: 'Plain weave - special', yarn_count: '60C', warp_ends: 3000, colour: 'red, yellow', loom_id: '08', type: 'Towel' }
       ]);
       console.log('Seeded varieties collection');
     }
   } catch (e) {
     console.error("Error seeding varieties:", e);
+  }
+
+  // Ensure all existing beams have a default type of 'Veshti' if missing
+  try {
+    await cachedDb.collection('beams').updateMany(
+      { type: { $exists: false } },
+      { $set: { type: 'Veshti' } }
+    );
+  } catch (e) {
+    console.error("Error backfilling beam type:", e);
+  }
+
+  // Ensure all existing varieties have a default type of 'Veshti' if missing
+  try {
+    await cachedDb.collection('varieties').updateMany(
+      { type: { $exists: false } },
+      { $set: { type: 'Veshti' } }
+    );
+  } catch (e) {
+    console.error("Error backfilling variety type:", e);
   }
 
   return cachedDb;
@@ -109,6 +129,7 @@ app.get('/api/beams', async (req, res) => {
           _id: 0,
           beamId: '$beam_id',
           purchaseDate: '$purchase_date',
+          type: { $ifNull: ['$type', 'Veshti'] },
           varietyId: '$variety_id',
           variety: '$variety_info.variety_name',
           yarnCount: '$variety_info.yarn_count',
@@ -154,6 +175,7 @@ app.get('/api/varieties', async (req, res) => {
           _id: 0,
           varietyID: '$variety_id',
           varietyName: '$variety_name',
+          type: { $ifNull: ['$type', 'Veshti'] },
           yarnCount: '$yarn_count',
           warpEnds: '$warp_ends',
           colour: '$colour',
@@ -319,6 +341,7 @@ app.post('/api/beams', async (req, res) => {
         purchase_date: purchase_date,
         created_at: new Date().toISOString(),
         variety_id: variety_id,
+        type: beam.type || "Veshti",
         warp_ends: beam.warpEnds,
         purchased_mtr: parseFloat(beam.purchaseMtr),
         remaining_mtr: parseFloat(beam.purchaseMtr),
@@ -338,6 +361,85 @@ app.post('/api/beams', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to insert beams due to a database error. Check if the beam ID already exists." });
+  }
+});
+
+app.put('/api/beams/:beamId', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    const { beamId: paramBeamId } = req.params;
+    const { purchaseDate, beamId, purchaseMtr, type, varietyId, warpEnds } = req.body;
+
+    const oldBeam = await db.collection('beams').findOne({ beam_id: paramBeamId });
+    if (!oldBeam) {
+      return res.status(404).json({ error: "Beam not found" });
+    }
+
+    if (beamId && beamId !== paramBeamId) {
+      const existing = await db.collection('beams').findOne({ beam_id: beamId });
+      if (existing) {
+        return res.status(400).json({ error: "New Beam ID already exists" });
+      }
+    }
+
+    const updateFields = {};
+    if (purchaseDate) updateFields.purchase_date = purchaseDate;
+    if (beamId) updateFields.beam_id = beamId;
+    if (purchaseMtr !== undefined && purchaseMtr !== '') {
+      const newMtr = parseFloat(purchaseMtr);
+      if (oldBeam.remaining_mtr === oldBeam.purchased_mtr) {
+        updateFields.remaining_mtr = newMtr;
+      }
+      updateFields.purchased_mtr = newMtr;
+    }
+    if (type) updateFields.type = type;
+    if (varietyId) {
+      updateFields.variety_id = varietyId;
+      const varietyDoc = await db.collection('varieties').findOne({ variety_id: varietyId });
+      if (varietyDoc && varietyDoc.warp_ends) {
+        updateFields.warp_ends = varietyDoc.warp_ends;
+      }
+    }
+    if (warpEnds) updateFields.warp_ends = warpEnds;
+
+    await db.collection('beams').updateOne(
+      { beam_id: paramBeamId },
+      { $set: updateFields }
+    );
+
+    if (beamId && beamId !== paramBeamId) {
+      await db.collection('looms').updateMany(
+        { beam_id: paramBeamId },
+        { $set: { beam_id: beamId } }
+      );
+    }
+
+    res.json({ message: "success" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to update beam" });
+  }
+});
+
+app.delete('/api/beams/:beamId', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    const { beamId } = req.params;
+
+    await db.collection('looms').updateMany(
+      { beam_id: beamId },
+      { $set: { beam_id: null, status: 'Idle' } }
+    );
+
+    const result = await db.collection('beams').deleteOne({ beam_id: beamId });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Beam not found" });
+    }
+
+    res.json({ message: "success" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to delete beam" });
   }
 });
 
