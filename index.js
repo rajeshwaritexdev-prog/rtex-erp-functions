@@ -6,8 +6,10 @@ const { configDotenv } = require('dotenv');
 
 const app = express();
 
-// Allow requests from your React frontend
-// app.use(cors());
+// Conditionally enable CORS locally without causing duplicate CORS headers in AWS Lambda
+if (!process.env.AWS_LAMBDA_FUNCTION_NAME && !process.env.LAMBDA_TASK_ROOT) {
+  app.use(cors());
+}
 app.use(express.json());
 configDotenv(); // Load environment variables from .env file (for local development)
 
@@ -179,7 +181,8 @@ app.get('/api/varieties', async (req, res) => {
           yarnCount: '$yarn_count',
           warpEnds: '$warp_ends',
           colour: '$colour',
-          loomID: '$loom_id'
+          loomID: '$loom_id',
+          meterPerUnit: { $ifNull: ['$meter_per_unit', 1.5] }
         }
       }
     ]).toArray();
@@ -187,6 +190,45 @@ app.get('/api/varieties', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/varieties', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    const { varietyName, yarnCount, warpEnds, meterPerUnit, type } = req.body;
+
+    if (!varietyName) {
+      return res.status(400).json({ error: "Variety name is required" });
+    }
+
+    const varietyId = 'VAR-' + Date.now();
+
+    const newVariety = {
+      variety_id: varietyId,
+      variety_name: varietyName,
+      yarn_count: yarnCount || '',
+      warp_ends: warpEnds ? parseInt(warpEnds, 10) : 0,
+      meter_per_unit: meterPerUnit ? parseFloat(meterPerUnit) : 0,
+      type: type || 'Veshti',
+      created_at: new Date()
+    };
+
+    await db.collection('varieties').insertOne(newVariety);
+
+    const responseData = {
+      varietyID: newVariety.variety_id,
+      varietyName: newVariety.variety_name,
+      yarnCount: newVariety.yarn_count,
+      warpEnds: newVariety.warp_ends,
+      meterPerUnit: newVariety.meter_per_unit,
+      type: newVariety.type
+    };
+
+    res.json({ message: "success", data: responseData });
+  } catch (error) {
+    console.error("Error adding variety:", error);
+    res.status(500).json({ error: "Failed to add variety due to a database error." });
   }
 });
 
