@@ -173,6 +173,25 @@ app.get('/api/varieties', async (req, res) => {
     const db = await connectToDatabase();
     const varieties = await db.collection('varieties').aggregate([
       {
+        $lookup: {
+          from: 'beams',
+          let: { varId: '$variety_id', varName: '$variety_name' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $or: [
+                    { $eq: ['$variety_id', '$$varId'] },
+                    { $eq: ['$variety', '$$varName'] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'beams_list'
+        }
+      },
+      {
         $project: {
           _id: 0,
           varietyID: '$variety_id',
@@ -182,11 +201,40 @@ app.get('/api/varieties', async (req, res) => {
           warpEnds: '$warp_ends',
           colour: '$colour',
           loomID: '$loom_id',
-          meterPerUnit: { $ifNull: ['$meter_per_unit', 1.5] }
+          meterPerUnit: { $ifNull: ['$meter_per_unit', 1.5] },
+          beams_list: 1
         }
       }
     ]).toArray();
-    res.json({ data: varieties });
+
+    const varietiesWithCounts = varieties.map(v => {
+      const beams = v.beams_list || [];
+      let runningBeamsCount = 0;
+      let availableBeamsCount = 0;
+
+      beams.forEach(beam => {
+        const remainingMtr = beam.remaining_mtr !== undefined ? Number(beam.remaining_mtr) : (beam.purchased_mtr !== undefined ? Number(beam.purchased_mtr) : 0);
+        if (remainingMtr > 0) {
+          const isAllocated = beam.loom && beam.loom !== "Yet to be allocated" && beam.loom !== "Unallocated" && String(beam.loom).trim() !== "" && beam.loom !== "-";
+          if (isAllocated) {
+            runningBeamsCount++;
+          } else {
+            availableBeamsCount++;
+          }
+        }
+      });
+
+      const { beams_list, ...rest } = v;
+      return {
+        ...rest,
+        runningBeamsCount,
+        availableBeamsCount,
+        running_beams_count: runningBeamsCount,
+        available_beams_count: availableBeamsCount
+      };
+    });
+
+    res.json({ data: varietiesWithCounts });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -222,13 +270,107 @@ app.post('/api/varieties', async (req, res) => {
       yarnCount: newVariety.yarn_count,
       warpEnds: newVariety.warp_ends,
       meterPerUnit: newVariety.meter_per_unit,
-      type: newVariety.type
+      type: newVariety.type,
+      runningBeamsCount: 0,
+      availableBeamsCount: 0,
+      running_beams_count: 0,
+      available_beams_count: 0
     };
 
     res.json({ message: "success", data: responseData });
   } catch (error) {
     console.error("Error adding variety:", error);
     res.status(500).json({ error: "Failed to add variety due to a database error." });
+  }
+});
+
+app.put('/api/varieties/:varietyId', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    const { varietyId } = req.params;
+    const { varietyName, type, yarnCount, warpEnds, meterPerUnit } = req.body;
+
+    const oldVariety = await db.collection('varieties').findOne({ variety_id: varietyId });
+    if (!oldVariety) {
+      return res.status(404).json({ error: "Variety not found" });
+    }
+
+    const updateFields = {};
+    if (varietyName !== undefined) updateFields.variety_name = varietyName;
+    if (type !== undefined) updateFields.type = type;
+    if (yarnCount !== undefined) updateFields.yarn_count = yarnCount;
+    if (warpEnds !== undefined) updateFields.warp_ends = parseInt(warpEnds, 10) || 0;
+    if (meterPerUnit !== undefined) updateFields.meter_per_unit = parseFloat(meterPerUnit) || 0;
+
+    await db.collection('varieties').updateOne(
+      { variety_id: varietyId },
+      { $set: updateFields }
+    );
+
+    if (varietyName && varietyName !== oldVariety.variety_name) {
+      await db.collection('beams').updateMany(
+        { variety_id: varietyId },
+        { $set: { variety: varietyName } }
+      );
+      await db.collection('looms').updateMany(
+        { variety: oldVariety.variety_name },
+        { $set: { variety: varietyName } }
+      );
+    }
+
+    res.json({ message: "success" });
+  } catch (error) {
+    console.error("Error updating variety:", error);
+    res.status(500).json({ error: "Failed to update variety due to a database error." });
+  }
+});
+
+app.delete('/api/varieties/:varietyId', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    const { varietyId } = req.params;
+
+    const oldVariety = await db.collection('varieties').findOne({ variety_id: varietyId });
+    if (!oldVariety) {
+      return res.status(404).json({ error: "Variety not found" });
+    }
+
+    const beams = await db.collection('beams').find({
+      $or: [
+        { variety_id: varietyId },
+        { variety: oldVariety.variety_name }
+      ]
+    }).toArray();
+
+    let runningBeamsCount = 0;
+    let availableBeamsCount = 0;
+    beams.forEach(beam => {
+      const remainingMtr = beam.remaining_mtr !== undefined ? Number(beam.remaining_mtr) : (beam.purchased_mtr !== undefined ? Number(beam.purchased_mtr) : 0);
+      if (remainingMtr > 0) {
+        const isAllocated = beam.loom && beam.loom !== "Yet to be allocated" && beam.loom !== "Unallocated" && String(beam.loom).trim() !== "" && beam.loom !== "-";
+        if (isAllocated) {
+          runningBeamsCount++;
+        } else {
+          availableBeamsCount++;
+        }
+      }
+    });
+
+    if (runningBeamsCount > 0 || availableBeamsCount > 0) {
+      return res.status(400).json({
+        error: `Cannot delete variety. Currently ${runningBeamsCount} beam(s) running and ${availableBeamsCount} beam(s) available.`
+      });
+    }
+
+    const result = await db.collection('varieties').deleteOne({ variety_id: varietyId });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Variety not found" });
+    }
+
+    res.json({ message: "success" });
+  } catch (error) {
+    console.error("Error deleting variety:", error);
+    res.status(500).json({ error: "Failed to delete variety due to a database error." });
   }
 });
 
